@@ -1,182 +1,36 @@
-name: Build Image
+name: Main build pipeline
+
+run-name: ${{ inputs.run_name }}
 on:
   workflow_dispatch:
     inputs:
-      prs:
-        description: 'List of Additions, example: pr-1-url,pr-2-url'
+      run_name:
+        description: 'Name of the current pipeline run'
+        required: false
+        type: string
+      labels:
+        description: 'List of labels'
         required: true
         default: ''
-      BUILDTYPES:
-        description: 'Build type'
-        required: true
-        default: 'debug'
-        type: choice
-        options:
-          - debug
-          - release
-          - release_dev
-      asic_8650:
-        description: 'Boolean parameter asic_8650'
-        required: true
-        default: false
-        type: boolean
-
-
 
 jobs:
   validate:
     container:
       image: python:3.10-alpine
-      env:
-        GITHUB_TOKEN: ${{ secrets.BUILD_GH_TOKEN }}
     runs-on:
       - self-hosted
       - k8s-api
       - linux-amd64-m
     outputs:
-      prs: ${{ steps.list_prs.outputs.prs }}
+      prs_urls: ${{ steps.list_prs.outputs.prs_urls }}
+      repos: ${{ steps.list_prs.outputs.repos }}
     steps:
-      - name: Add Git
-        run: apk add git --no-cache
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        # with:
-        #   submodules: 'true'
-      
-      - name: Install Deps
-        run: pip3 install -r ./ci-scripts/requirements.txt
-
-      - name: Prepare Manifest
+      - name: List Pull Requests
+        uses: Hitachi-Astemo-SDV/github-hitachi-astemo-poc-common-actions/actions/list-prs@list_prs
         id: list_prs
-        run: ./ci-scripts/main.py -p '${{ inputs.prs }}' -m default.xml >> "$GITHUB_OUTPUT"
-
-      - name: Build
-        run: cat new-default.xml
-      
-      - name: Upload new manifest.xml artifact
-        uses: actions/upload-artifact@v4
         with:
-          name: manifest
-          path: new-default.xml
+          GITHUB_TOKEN: ${{ secrets.BUILD_GH_TOKEN }}
+          labels: ${{ inputs.labels }}
 
-  build:
-    name: Build
-    container: ubuntu:latest
-    runs-on:
-      - self-hosted
-      - k8s-api
-      - linux-amd64-m
-    needs: validate
-    steps:
-
-      - name: Set curr_date variable
-        run: echo "curr_date=$(date +%F)" >> $GITHUB_ENV
-
-      - name: Set REPO_NAME variable
-        run: echo "REPO_NAME=${{ github.event.repository.name }}" >> $GITHUB_ENV
-
-      - name: Download new manifest.xml artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: manifest
-
-      - name: Install repo
-        run: |
-          apt-get update
-          apt-get -y install repo
-
-      - name: Repo init
-        run: repo init -u https://github.com/Hitachi-Astemo-SDV/github-hitachi-astemo-poc-manifest.git -m new-default.xml
-
-      - name: Repo sync
-        run: repo sync
-
-      - name: Run build a0
-        run: |
-          # Check if MY_BOOL_PARAM is true
-          if [ "${{ inputs.asic_8650 }}" = "true" ]; then
-            VAR='-f 8650_asic'
-          else
-            VAR=''
-          fi
-
-          # Use VAR as needed below, or export it for subsequent steps
-          echo "Build type set to $VAR"
-
-          ./build.sh build all -t ${{ inputs.BUILDTYPES }} $VAR
-          ./build.sh metabuild
-          ./build.sh collect
-
-      - name: Check a0 artifacts size
-        run: |
-          set -ex
-          ARTIFACTS_SIZE=$(du -sb ./out_collect | awk '{print $1}')
-          if [[ $(echo "$ARTIFACTS_SIZE > 2000000000" | bc) -eq 1  ]]; then
-              echo "Artifacts size is greater than 2GB, build successful."
-          else
-              echo "Artifacts size is less than 2GB, marking the build as failed."
-              exit 1
-          fi
-
-      - name: Move a0 out_collect
-        run: |
-          mkdir -p ./archive/archive_a0_${{ env.REPO_NAME }}_${{ inputs.BUILDTYPES }}_${{ github.run_number }}_${{ env.curr_date }}
-          zip -r archive_a0_${{ env.REPO_NAME }}_${{ inputs.BUILDTYPES }}_${{ github.run_number }}_${{ env.curr_date }}.zip ./out_collect -i \*
-
-          mv archive_a0_${{ env.REPO_NAME }}_${{ inputs.BUILDTYPES }}_${{ github.run_number }}_${{ env.curr_date }}.zip ./archive/archive_a0_${{ env.REPO_NAME }}_${{ inputs.BUILDTYPES }}_${{ github.run_number }}_${{ env.curr_date }}
-
-      - name: Run build b0
-        run: |
-          ./build.sh metabuild -f astemo_b0
-          ./build.sh collect -f astemo_b0
-
-      - name: Check b0 artifacts size
-        run: |
-          set -ex
-          ARTIFACTS_SIZE=$(du -sb ./out_collect | awk '{print $1}')
-          if [[ $(echo "$ARTIFACTS_SIZE > 2000000000" | bc) -eq 1  ]]; then
-              echo "Artifacts size is greater than 2GB, build successful."
-          else
-              echo "Artifacts size is less than 2GB, marking the build as failed."
-              exit 1
-          fi
-
-      - name: Move b0 out_collect
-        run: |
-          mkdir -p ./archive/archive_b0_${{ env.REPO_NAME }}_${{ inputs.BUILDTYPES }}_${{ github.run_number }}_${{ env.curr_date }}
-          zip -r archive_b0_${{ env.REPO_NAME }}_${{ inputs.BUILDTYPES }}_${{ github.run_number }}_${{ env.curr_date }}.zip ./out_collect -i \*
-
-          mv archive_b0_${{ env.REPO_NAME }}_${{ inputs.BUILDTYPES }}_${{ github.run_number }}_${{ env.curr_date }}.zip ./archive/archive_b0_${{ env.REPO_NAME }}_${{ inputs.BUILDTYPES }}_${{ github.run_number }}_${{ env.curr_date }}
-
-      - name: Repo
-        run: |
-          repo manifest -r -o ./archive/archive_a0_${{ env.REPO_NAME }}_${{ inputs.BUILDTYPES }}_${{ github.run_number }}_${{ env.curr_date }}/buildmanifest.xml
-          repo forall -c "pwd && git log --oneline -n10 && echo \"\n\"" > ./archive/archive_a0_${{ env.REPO_NAME }}_${{ inputs.BUILDTYPES }}_${{ github.run_number }}_${{ env.curr_date }}/gitlog
-
-      - name: Archive build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: archive_${{ env.REPO_NAME }}_${{ inputs.BUILDTYPES }}_${{ github.run_number }}_${{ env.curr_date }}
-          path: |
-            ./archive/archive_a0_${{ env.REPO_NAME }}_${{ inputs.BUILDTYPES }}_${{ github.run_number }}_${{ env.curr_date }}/*
-            ./archive/archive_b0_${{ env.REPO_NAME }}_${{ inputs.BUILDTYPES }}_${{ github.run_number }}_${{ env.curr_date }}/*
-
-  approve:
-    container: alpine:latest
-    runs-on:
-      - self-hosted
-      - k8s-api
-      - linux-amd64-m
-    needs: [validate, build]
-    strategy:
-      matrix:
-        prs: ${{ fromJson(needs.validate.outputs.prs) }}
-    steps:
-      - run: echo ${{ matrix.prs }}
-      # - name: Approve Pull Request
-      #   uses: juliangruber/approve-pull-request-action@v2
-      #   with:
-      #     github-token: ${{ secrets.BUILD_GH_TOKEN }}
-      #     number: 1
-      #     repo: ${{ matrix.prs }}
+      - name: Print Pull Requests
+        run: echo "${{ steps.list_prs.outputs.prs_urls }}"
