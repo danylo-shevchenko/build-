@@ -15,12 +15,7 @@ on:
 
 jobs:
   validate:
-    container:
-      image: python:3.10-alpine
-    runs-on:
-      - self-hosted
-      - k8s-api
-      - linux-amd64-m
+    runs-on: ubuntu-latest
     outputs:
       prs_urls: ${{ steps.list_prs.outputs.prs_urls }}
       repos: ${{ steps.list_prs.outputs.repos }}
